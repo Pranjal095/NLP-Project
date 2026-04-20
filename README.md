@@ -30,8 +30,41 @@ MentalManip/
 │   ├── datasets/  # Datasets for the experiments
 │   ├── manipulation_detection/  # Code for the manipulation detection task
 │   ├── technique_vulnerability/  # Code for the technique and vulnerability classification task
+├── refusal_pipeline/  # Local manipulation-aware refusal pipeline
 ├── statistic_analysis/  # Code for generating statistical figures in the paper
 ```
+
+The local refusal pipeline adds the Group 39 project work on top of the original
+MentalManip repository. It defaults to `roberta-base` for the detector while
+using HuggingFace `Auto*` loading so local smoke-test checkpoints and compatible
+sequence classifiers can also be loaded. It includes a stratified detector,
+optional technique/vulnerability classifiers, multi-turn context windows,
+deterministic refusal templates, and adversarial stress tests. See
+[`refusal_pipeline/README.md`](./refusal_pipeline/README.md) and
+[`refusal_pipeline/IMPLEMENTATION.md`](./refusal_pipeline/IMPLEMENTATION.md).
+
+Latest local pipeline verification completed the full Group 39 command sequence
+with `python3`:
+
+```bash
+cd refusal_pipeline
+python3 train_detector.py --data_path ../mentalmanip_dataset/mentalmanip_con.csv --epochs 3
+python3 train_attributes.py --task technique --data_path ../mentalmanip_dataset/mentalmanip_con.csv
+python3 train_attributes.py --task vulnerability --data_path ../mentalmanip_dataset/mentalmanip_con.csv
+python3 evaluate.py --model_path ./saved_model/final --data_path ../mentalmanip_dataset/mentalmanip_con.csv
+python3 stress_tests.py --model_path ./saved_model/final
+```
+
+The binary detector saved to `refusal_pipeline/saved_model/final` achieved
+test accuracy `0.7033`, precision `0.7010`, recall `0.9950`, F1 `0.8226`, and
+macro-F1 `0.4584` on the stratified held-out split. Its confusion matrix was
+`[[9, 171], [2, 401]]`, so the current threshold is strongly recall-oriented
+and produces many benign false positives. The optional technique and
+vulnerability classifiers also trained successfully, with test micro-F1 scores
+of `0.3585` and `0.4089` respectively. Stress tests confirmed the same pattern:
+all manipulative stress cases were caught, but both benign hard negatives were
+flagged. The main remaining empirical need is threshold calibration and stronger
+hard-negative coverage.
 
 ## 2. Datasets Description
 Please check under the [dataset folder](./mentalmanip_dataset/).
@@ -124,4 +157,3 @@ This code file contains functions to:
   url={https://aclanthology.org/2024.acl-long.206},
 }
 ```
-

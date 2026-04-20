@@ -8,14 +8,17 @@ Two modes:
 """
 
 import argparse
-import numpy as np
+import json
+import os
 import torch
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, confusion_matrix, classification_report,
 )
-from transformers import RobertaTokenizer, RobertaForSequenceClassification
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+from attribute_classifier import load_available_attribute_classifiers, predict_available_attributes
+from context_window import build_context_window
 from data_loader import load_mentalmanip
 from refusal_policy import generate_response
 
@@ -23,7 +26,24 @@ from refusal_policy import generate_response
 # Quantitative evaluation
 # ──────────────────────────────────────────────────────────────────────────────
 
-def quantitative_eval(model, tokenizer, test_df, device, max_length=512):
+def load_pipeline_config(model_path):
+    config_path = os.path.join(model_path, "pipeline_config.json")
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def quantitative_eval(
+    model,
+    tokenizer,
+    test_df,
+    device,
+    max_length=512,
+    threshold=0.5,
+    context_turns=None,
+    context_chars=None,
+):
     """Run the detector on the test split and print full metrics."""
     model.eval()
     all_preds = []
@@ -31,19 +51,25 @@ def quantitative_eval(model, tokenizer, test_df, device, max_length=512):
 
     with torch.no_grad():
         for _, row in test_df.iterrows():
-            enc = tokenizer(
+            context = build_context_window(
                 row["Dialogue"],
+                max_turns=context_turns,
+                max_chars=context_chars,
+            )
+            enc = tokenizer(
+                context.text,
                 return_tensors="pt",
                 truncation=True,
                 padding="max_length",
                 max_length=max_length,
             ).to(device)
             logits = model(**enc).logits
-            pred = int(torch.argmax(logits, dim=-1).item())
+            probs = torch.softmax(logits, dim=-1)
+            pred = int(probs[0, 1].item() >= threshold)
             all_preds.append(pred)
 
     print("\n" + "=" * 60)
-    print("  QUANTITATIVE EVALUATION — Test Set")
+    print(f"  QUANTITATIVE EVALUATION — Test Set (threshold={threshold:.2f})")
     print("=" * 60)
     print(classification_report(
         all_labels, all_preds,
@@ -127,7 +153,16 @@ QUALITATIVE_EXAMPLES = [
 ]
 
 
-def qualitative_eval(model, tokenizer, device, max_length=512):
+def qualitative_eval(
+    model,
+    tokenizer,
+    device,
+    max_length=512,
+    threshold=0.5,
+    attribute_classifiers=None,
+    context_turns=None,
+    context_chars=None,
+):
     """Run curated examples through detection + refusal and display results."""
     model.eval()
 
@@ -137,10 +172,15 @@ def qualitative_eval(model, tokenizer, device, max_length=512):
 
     for i, ex in enumerate(QUALITATIVE_EXAMPLES, 1):
         dialogue = ex["dialogue"]
+        context = build_context_window(
+            dialogue,
+            max_turns=context_turns,
+            max_chars=context_chars,
+        )
 
         # Run detector
         enc = tokenizer(
-            dialogue,
+            context.text,
             return_tensors="pt",
             truncation=True,
             padding="max_length",
@@ -150,10 +190,15 @@ def qualitative_eval(model, tokenizer, device, max_length=512):
             logits = model(**enc).logits
             probs = torch.softmax(logits, dim=-1)
             prob_manip = probs[0, 1].item()
-            pred_label = int(torch.argmax(logits, dim=-1).item())
+            pred_label = int(prob_manip >= threshold)
 
         is_manip = pred_label == 1
-        result = generate_response(dialogue, is_manip, prob_manip)
+        attributes = (
+            predict_available_attributes(context.text, attribute_classifiers)
+            if is_manip and attribute_classifiers
+            else {}
+        )
+        result = generate_response(dialogue, is_manip, prob_manip, attributes, context.signals)
 
         # Display
         print(f"\n{'─' * 60}")
@@ -163,9 +208,16 @@ def qualitative_eval(model, tokenizer, device, max_length=512):
         print(f"Expected:   {'Manipulative' if ex['expected_manip'] else 'Non-manipulative'}")
         print(f"Predicted:  {'Manipulative' if is_manip else 'Non-manipulative'}  "
               f"(prob={prob_manip:.4f})")
+        print(f"Context:    {context.used_turns}/{context.total_turns} turns")
+        if context.signals.get("active"):
+            print(f"Signals:    {', '.join(context.signals['active'])}")
         match = "✅" if (is_manip == ex["expected_manip"]) else "❌"
         print(f"Correct:    {match}")
         print(f"Scenario:   {result['scenario']}")
+        if result["attributes"]:
+            for task, prediction in result["attributes"].items():
+                labels = ", ".join(prediction["labels"]) or "none above threshold"
+                print(f"{task.title()}: {labels}")
         print(f"\nAssistant Response:\n  {result['response'].replace(chr(10), chr(10) + '  ')}")
 
         # Quality checks
@@ -195,24 +247,53 @@ def main():
                         help="Path to MentalManip CSV (for quantitative eval)")
     parser.add_argument("--qualitative", action="store_true",
                         help="Run qualitative evaluation only")
-    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--max_length", type=int, default=None)
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Override the saved manipulation probability threshold")
+    parser.add_argument("--context_turns", type=int, default=None,
+                        help="Use only the most recent N turns for detection")
+    parser.add_argument("--context_chars", type=int, default=None,
+                        help="Use only the most recent N characters after turn windowing")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     print(f"Loading model from {args.model_path} …")
-    tokenizer = RobertaTokenizer.from_pretrained(args.model_path)
-    model = RobertaForSequenceClassification.from_pretrained(args.model_path).to(device)
+    config = load_pipeline_config(args.model_path)
+    max_length = args.max_length or config.get("max_length", 512)
+    threshold = args.threshold if args.threshold is not None else config.get("threshold", 0.5)
+    print(f"Using max_length={max_length}, threshold={threshold:.2f}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(args.model_path).to(device)
+    attribute_base_dir = os.path.dirname(os.path.normpath(args.model_path)) or "./saved_model"
+    attribute_classifiers = load_available_attribute_classifiers(
+        {
+            "technique": os.path.join(attribute_base_dir, "technique"),
+            "vulnerability": os.path.join(attribute_base_dir, "vulnerability"),
+        },
+        device=device,
+    )
+    if attribute_classifiers:
+        print(f"Loaded attribute classifiers: {', '.join(sorted(attribute_classifiers))}")
 
     if args.qualitative:
-        qualitative_eval(model, tokenizer, device, args.max_length)
+        qualitative_eval(
+            model, tokenizer, device, max_length, threshold, attribute_classifiers,
+            args.context_turns, args.context_chars,
+        )
     else:
         # Run both
         print(f"Loading test data from {args.data_path} …")
         _, _, test_df = load_mentalmanip(args.data_path)
-        quantitative_eval(model, tokenizer, test_df, device, args.max_length)
-        qualitative_eval(model, tokenizer, device, args.max_length)
+        quantitative_eval(
+            model, tokenizer, test_df, device, max_length, threshold,
+            args.context_turns, args.context_chars,
+        )
+        qualitative_eval(
+            model, tokenizer, device, max_length, threshold, attribute_classifiers,
+            args.context_turns, args.context_chars,
+        )
 
 
 if __name__ == "__main__":

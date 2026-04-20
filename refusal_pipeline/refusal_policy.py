@@ -8,7 +8,7 @@ response and offers a constructive alternative.
 No external APIs or LLMs — pure Python templates.
 """
 
-import re
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Scenario keywords  (lowercase matching)
@@ -134,7 +134,116 @@ def get_refusal_response(scenario: str) -> str:
     return REFUSAL_TEMPLATES.get(scenario, REFUSAL_TEMPLATES["general"])
 
 
-def generate_response(dialogue: str, is_manipulative: bool, probability: float = 0.0) -> dict:
+def _coerce_attribute_labels(attributes, task):
+    if not attributes:
+        return []
+    value = attributes.get(task, [])
+    if hasattr(value, "labels"):
+        return value.labels
+    return list(value)
+
+
+def adapt_response_with_attributes(response: str, attributes: Optional[dict]) -> str:
+    """
+    Add deterministic technique/vulnerability-aware guidance when optional
+    attribute classifiers are available.
+    """
+    if not attributes:
+        return response
+
+    techniques = set(_coerce_attribute_labels(attributes, "technique"))
+    vulnerabilities = set(_coerce_attribute_labels(attributes, "vulnerability"))
+    additions = []
+
+    if "Intimidation" in techniques or "Brandishing Anger" in techniques:
+        additions.append(
+            "I can continue once the conversation stays free of threats or intimidation."
+        )
+    elif "Shaming or Belittlement" in techniques or "Accusation" in techniques:
+        additions.append(
+            "I can help best if we focus on the specific issue without blame or personal attacks."
+        )
+    elif "Persuasion or Seduction" in techniques:
+        additions.append(
+            "I will base the next step on the facts of the request, not on pressure to agree."
+        )
+    elif "Denial" in techniques or "Evasion" in techniques or "Rationalization" in techniques:
+        additions.append(
+            "A clear, direct description of the concern will make it easier to find a fair path forward."
+        )
+
+    if "Dependency" in vulnerabilities or "Low self-esteem" in vulnerabilities:
+        additions.append(
+            "You do not need to prove your worth or dependence here; we can slow down and look at options."
+        )
+    elif "Over-responsibility" in vulnerabilities:
+        additions.append(
+            "It is okay to separate what you can reasonably handle from what belongs to someone else."
+        )
+    elif "Naivete" in vulnerabilities:
+        additions.append(
+            "I can also explain the trade-offs plainly before any decision is made."
+        )
+    elif "Over-intellectualization" in vulnerabilities:
+        additions.append(
+            "I can keep the next steps concrete and avoid turning this into an abstract debate."
+        )
+
+    if not additions:
+        return response
+    return response + "\n\n" + " ".join(additions)
+
+
+def adapt_response_with_context(response: str, context_signals: Optional[dict]) -> str:
+    if not context_signals or not context_signals.get("cumulative_risk"):
+        return response
+
+    repeated = set(context_signals.get("repeated", []))
+    active = set(context_signals.get("active", []))
+    additions = []
+
+    if "intimidation" in repeated or "intimidation" in active:
+        additions.append(
+            "Because this has included escalating pressure, I will keep the next step procedural and calm."
+        )
+    elif "pressure" in repeated or "guilt" in repeated:
+        additions.append(
+            "Since the pressure has appeared across multiple turns, I am going to pause the escalation and focus on a concrete, voluntary next step."
+        )
+    elif "flattery" in active and ("pressure" in active or "guilt" in active):
+        additions.append(
+            "I appreciate the positive framing, but I will still evaluate the request on its merits."
+        )
+    else:
+        additions.append(
+            "The overall pattern is becoming less productive, so I will keep the response bounded and practical."
+        )
+
+    return response + "\n\n" + " ".join(additions)
+
+
+def serialize_attributes(attributes):
+    if not attributes:
+        return {}
+    serialized = {}
+    for task, value in attributes.items():
+        if hasattr(value, "labels"):
+            serialized[task] = {
+                "labels": value.labels,
+                "scores": value.scores,
+            }
+        else:
+            serialized[task] = {"labels": list(value)}
+    return serialized
+
+
+def generate_response(
+    dialogue: str,
+    is_manipulative: bool,
+    probability: float = 0.0,
+    attributes: Optional[dict] = None,
+    context_signals: Optional[dict] = None,
+) -> dict:
     """
     Full response generation pipeline.
 
@@ -142,13 +251,19 @@ def generate_response(dialogue: str, is_manipulative: bool, probability: float =
         dialogue:        The input dialogue text.
         is_manipulative: Whether the detector flagged it as manipulative.
         probability:     The model's confidence (probability of class 1).
+        attributes:      Optional technique/vulnerability predictions.
+        context_signals: Optional cumulative multi-turn pattern analysis.
 
     Returns:
         dict with keys: scenario, response, is_manipulative, probability
     """
     if is_manipulative:
         scenario = detect_scenario(dialogue)
-        response = get_refusal_response(scenario)
+        response = adapt_response_with_attributes(
+            get_refusal_response(scenario),
+            attributes,
+        )
+        response = adapt_response_with_context(response, context_signals)
     else:
         scenario = "none"
         response = NON_MANIPULATIVE_RESPONSE
@@ -157,6 +272,8 @@ def generate_response(dialogue: str, is_manipulative: bool, probability: float =
         "is_manipulative": is_manipulative,
         "probability": round(probability, 4),
         "scenario": scenario,
+        "attributes": serialize_attributes(attributes),
+        "context_signals": context_signals or {},
         "response": response,
     }
 

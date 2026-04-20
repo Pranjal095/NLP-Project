@@ -1,0 +1,332 @@
+P2: Manipulation-Aware
+Refusal Mechanisms
+Mid-Project Progress Report
+Group 39
+Pranjal Prajapati | CS23BTECH11048
+Roshan Y Singh | CS23BTECH11052
+Sujal Meshram | CS23BTECH11060
+
+Problem Statement
+The Challenge
+LLMs undergo extensive safety fine-tuning to
+prevent harmful outputs
+Jailbreak attempts manipulate models into
+generating toxic content
+Conversational manipulation is subtle and hard to
+detect automatically
+
+MentalManip Dataset
+
+2,915
+
+Dialogues total
+
+11
+
+Manipulation Techniques
+
+5
+
+Victim Vulnerability Types
+
+2
+
+Sets: Control (Dc) and
+Manipulation (Dm)
+
+Current systems lack psychologically-aware
+defenses
+
+Manipulation Techniques (M)
+The MentalManip dataset defines 11 manipulation techniques present in dialogues:
+
+1. Denial
+
+5. Playing the Victim Role
+
+9. Brandishing Anger
+
+2. Evasion
+
+6. Playing the Servant Role
+
+10. Accusation
+
+3. Feigning Innocence
+
+7. Shaming or Belittlement
+
+11. Persuasion or Seduction
+
+4. Rationalization
+
+8. Intimidation
+
+What We Built: Manipulation Detector
+Component A | RoBERTa Classifier
+Base Model
+
+Input
+
+Head
+
+roberta-base (125M parameters,
+HuggingFace Transformers)
+Dialogue text tokenised up to max_length =
+128 tokens
+Linear classification head added on top of
+[CLS] token output
+
+Pipeline Files (p2_refusal_pipeline/)
+data_loader.py
+Loads mentalmanip_con.csv, applies 60/20/20 split, returns
+HuggingFace Dataset objects ready for training.
+
+train_detector.py
+Fine-tunes roberta-base using the Trainer API. Saves the best
+checkpoint based on validation loss.
+
+refusal_policy.py
+
+Output
+
+Binary label: Manipulation (1) or Normal (0)
+
+Loss
+
+CrossEntropyLoss, Adam optimiser, 1 training
+epoch on CPU
+
+Data Split
+
+60% train / 20% validation / 20% test
+(stratified)
+
+Keyword-based classifier that maps detected text to a scenario tag and
+selects a deterministic response template.
+
+evaluate.py
+Runs inference on the test set, computes accuracy, precision, recall
+and F1, and prints the confusion matrix.
+
+demo.py
+Interactive CLI that accepts user input, runs detection and refusal
+policy end-to-end, and prints the result.
+
+What We Built: Rule-Based Refusal Policy
+Manipulation Detected
+
+1
+
+The RoBERTa classifier flags the incoming user utterance as manipulative (confidence above threshold). Normal utterances
+bypass the policy entirely and receive a standard assistant response.
+
+Scenario Classification
+
+2
+
+The flagged text is scanned for keywords mapped to scenario tags such as guilt_trip, pressure, flattery, threat and victimhood.
+This lightweight keyword match requires no additional model call.
+
+Template Response Issued
+
+3
+
+A deterministic template is selected for the matched scenario. Every template follows a fixed structure: (a) acknowledge the
+user's feelings, (b) set a clear boundary, (c) offer a constructive alternative path forward.
+
+Key design choice: no free-form generation in the refusal path. Templates guarantee the model cannot be tricked into producing unsafe output through the refusal response itself.
+
+Experimental Results
+
+70.50%
+
+70.73%
+
+97.25%
+
+81.89%
+
+Accuracy
+
+Precision
+
+Recall
+
+F1 Score
+
+Confusion Matrix
+
+True: Normal
+
+Key Insight
+Pred: Normal
+
+Pred: Manip
+
+22
+
+161
+
+✓ 97.25% recall: nearly all manipulation instances are caught
+✓ Refusal templates fire correctly on detected manipulation
+
+✓ Normal queries pass through without triggering refusal
+True: Manip
+
+11
+
+389
+
+! Precision at 70%: some normal utterances flagged as manipulation
+i For a safety system, high recall is prioritised over precision
+
+Team Roles | Group 39
+Pranjal Prajapati
+
+Roshan Y Singh
+
+Sujal Meshram
+
+CS23BTECH11048
+
+CS23BTECH11052
+
+CS23BTECH11060
+
+Current Work
+
+Current Work
+
+Current Work
+
+▸ RoBERTa fine-tuning and training loop
+
+▸ Refusal policy design and heuristic rules
+
+▸ Dataset analysis and preprocessing
+
+▸ Pipeline: data_loader, train, evaluate
+
+▸ Template response generation logic
+
+▸ Evaluation metrics and confusion matrix
+
+▸ Demo CLI interface
+
+▸ Qualitative testing across scenario types
+
+▸ Documentation and reporting
+
+Next Steps
+
+Next Steps
+
+Next Steps
+
+-> 11-class multi-label classifier
+
+-> Vulnerability detection module
+
+-> Annotator-level uncertainty analysis
+
+-> LoRA / prefix-tuning adapter
+
+-> Multi-turn context window modelling
+
+-> Expanded evaluation suite
+
+-> Adversarial prompt stress tests
+
+-> Human evaluation framework design
+
+-> Dataset utilisation improvements
+
+[code] = primary coding responsibility for that task
+
+Plan: Next Steps
+Phase 1 | Fine-Grained Classification
+
+Phase 2 | Vulnerability Modeling
+
+Extend binary detector to a 11-class multi-label model using the full
+MentalManip annotations. Enables technique-specific refusal
+strategies.
+
+Predict victim vulnerability type from 5 available types. Adapt
+refusal tone to be more empathetic for dependency cases and
+firmer for intimidation.
+
+Phase 3 | LLM Adaptation via LoRA
+
+Phase 4 | Multi-Turn Context
+
+Use the detection signal as a control input for lightweight adapters
+(LoRA or prefix-tuning) applied to open-source LLMs such as Mistral
+and LLaMA.
+
+Move from single-turn to full conversation history modelling.
+Detect cumulative manipulation patterns that only become
+apparent over several dialogue turns.
+
+Phase 5 | Robust Evaluation
+
+Phase 6 | Generative Refusals
+
+Add human evaluation for politeness, helpfulness and resistance.
+Include adversarial and jailbreak stress tests. Use annotator
+disagreement for uncertainty.
+
+Replace deterministic templates with a fine-tuned small generative
+model or a retrieval-based system for more natural and contextsensitive refusal responses.
+
+Summary and Takeaways
+What We Achieved
+
+Known Limitations
+
+✓ Working detector
+
+! Precision at 70%: 161 normal utterances are mis-flagged as
+manipulation.
+
+RoBERTa fine-tuned on 2,915 dialogues achieves 97.25%
+recall, catching nearly all manipulation instances.
+
+✓ Safe refusal path
+Deterministic template policy with zero free-form generation.
+The refusal itself cannot be exploited.
+
+! Binary only: technique identity (which of 11 types) is not yet
+predicted.
+! Single-turn only: multi-turn manipulation patterns are not yet
+captured.
+
+✓ Fully local pipeline
+No API calls, no cloud cost. Runs entirely on CPU with opensource libraries: PyTorch, HuggingFace, scikit-learn.
+
+✓ Modular codebase
+Five clean modules (data_loader, train, refusal_policy,
+evaluate, demo) that can be swapped or extended
+independently.
+
+Future Work
+1
+
+Extend to 11-class classifier to unlock technique-specific refusals
+(Pranjal)
+
+2
+
+Add vulnerability prediction to personalise refusal tone (Roshan)
+
+3
+
+Integrate LoRA adapters on a small open-source LLM (Pranjal +
+Roshan)
+
+4
+
+Build expanded evaluation suite with adversarial inputs (Sujal)
+
+

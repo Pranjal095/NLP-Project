@@ -6,9 +6,17 @@ since pandas does not read the columns correctly for this CSV format.
 
 import csv
 import pandas as pd
+from sklearn.model_selection import train_test_split
 
 
-def load_mentalmanip(file_path, train_ratio=0.6, valid_ratio=0.2, random_state=42):
+def load_mentalmanip(
+    file_path,
+    train_ratio=0.6,
+    valid_ratio=0.2,
+    test_ratio=None,
+    random_state=42,
+    stratified=True,
+):
     """
     Load a MentalManip CSV file and split into train/valid/test sets.
 
@@ -16,7 +24,9 @@ def load_mentalmanip(file_path, train_ratio=0.6, valid_ratio=0.2, random_state=4
         file_path:     Path to mentalmanip_con.csv or mentalmanip_maj.csv
         train_ratio:   Fraction of data for training
         valid_ratio:   Fraction of data for validation
+        test_ratio:    Fraction of data for testing. Defaults to remaining data.
         random_state:  Random seed for reproducibility
+        stratified:    Preserve the manipulation label distribution across splits
 
     Returns:
         (train_df, valid_df, test_df) — each a pandas DataFrame with columns:
@@ -42,16 +52,41 @@ def load_mentalmanip(file_path, train_ratio=0.6, valid_ratio=0.2, random_state=4
     # Convert label to int
     df["Manipulative"] = df["Manipulative"].astype(int)
 
-    # Shuffle and split
-    df = df.sample(frac=1, random_state=random_state).reset_index(drop=True)
-    train_end = int(train_ratio * len(df))
-    valid_end = train_end + int(valid_ratio * len(df))
+    if test_ratio is None:
+        test_ratio = 1.0 - train_ratio - valid_ratio
+    split_total = train_ratio + valid_ratio + test_ratio
+    if abs(split_total - 1.0) > 1e-8:
+        raise ValueError(
+            "train_ratio + valid_ratio + test_ratio must sum to 1.0 "
+            f"(got {split_total:.4f})"
+        )
 
-    train_df = df.iloc[:train_end].reset_index(drop=True)
-    valid_df = df.iloc[train_end:valid_end].reset_index(drop=True)
-    test_df  = df.iloc[valid_end:].reset_index(drop=True)
+    stratify_labels = df["Manipulative"] if stratified else None
+    train_df, temp_df = train_test_split(
+        df,
+        train_size=train_ratio,
+        random_state=random_state,
+        shuffle=True,
+        stratify=stratify_labels,
+    )
+
+    valid_fraction_of_temp = valid_ratio / (valid_ratio + test_ratio)
+    temp_stratify = temp_df["Manipulative"] if stratified else None
+    valid_df, test_df = train_test_split(
+        temp_df,
+        train_size=valid_fraction_of_temp,
+        random_state=random_state,
+        shuffle=True,
+        stratify=temp_stratify,
+    )
+
+    train_df = train_df.reset_index(drop=True)
+    valid_df = valid_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
 
     # Print summary
+    split_kind = "stratified" if stratified else "shuffled"
+    print(f"  Split: {split_kind} {train_ratio:.0%}/{valid_ratio:.0%}/{test_ratio:.0%}")
     for name, split in [("Train", train_df), ("Valid", valid_df), ("Test", test_df)]:
         n_manip = (split["Manipulative"] == 1).sum()
         n_non   = (split["Manipulative"] == 0).sum()
