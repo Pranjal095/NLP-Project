@@ -1,0 +1,11 @@
+{
+  "name": "sentence-transformers/LaBSE",
+  "model_name": "sentence-transformers/LaBSE",
+  "architecture": "sentence_encoder",
+  "pooling": "mean",
+  "max_length": 256,
+  "embedding_normalize": true,
+  "language_focus": "retrieval",
+  "description": "Multilingual sentence encoder for retrieval, clustering, and weak supervision.",
+  "aliases": ["LaBSE", "labse"]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "google/byt5-small",
+  "model_name": "google/byt5-small",
+  "architecture": "seq2seq",
+  "pooling": "mean",
+  "max_length": 384,
+  "language_focus": "noisy-text",
+  "description": "Byte-level fallback for Romanized Indic, noisy spelling, and heavily corrupted inputs.",
+  "aliases": ["byt5-small"]
+}

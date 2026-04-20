@@ -1,0 +1,10 @@
+{
+  "name": "google/muril-base-cased",
+  "model_name": "google/muril-base-cased",
+  "architecture": "encoder",
+  "pooling": "cls",
+  "max_length": 256,
+  "language_focus": "indic",
+  "description": "Recommended for Indian languages and transliterated/Romanized inputs.",
+  "aliases": ["muril-base-cased", "muril"]
+}

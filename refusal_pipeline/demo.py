@@ -11,10 +11,11 @@ import argparse
 import json
 import os
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from attribute_classifier import load_available_attribute_classifiers, predict_available_attributes
 from context_window import build_context_window
+from multilingual_support.inference import load_text_model, predict_text
+from multilingual_support.preprocessing import PreprocessingConfig
 from refusal_policy import generate_response
 
 
@@ -28,29 +29,39 @@ def load_pipeline_config(model_path):
 
 def load_model(model_path, device):
     """Load the fine-tuned sequence-classification model and tokenizer."""
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path).to(device)
-    model.eval()
+    model, tokenizer, _, _ = load_text_model(model_path, device=device)
     return model, tokenizer
 
 
-def predict(model, tokenizer, text, device, max_length=512, threshold=0.5):
+def load_model_bundle(model_path, device):
+    return load_text_model(model_path, device=device)
+
+
+def predict(
+    model,
+    tokenizer,
+    text,
+    device,
+    max_length=512,
+    threshold=0.5,
+    *,
+    task_config=None,
+    model_mode="legacy",
+    preprocessing_config=None,
+):
     """Run the detector on a single text input."""
-    enc = tokenizer(
+    prediction = predict_text(
+        model,
+        tokenizer,
         text,
-        return_tensors="pt",
-        truncation=True,
-        padding="max_length",
+        device,
         max_length=max_length,
-    ).to(device)
-
-    with torch.no_grad():
-        logits = model(**enc).logits
-        probs = torch.softmax(logits, dim=-1)
-        prob_manip = probs[0, 1].item()
-        pred_label = int(prob_manip >= threshold)
-
-    return pred_label, prob_manip
+        threshold=threshold,
+        task_config=task_config,
+        mode=model_mode,
+        preprocessing_config=preprocessing_config,
+    )
+    return prediction["prediction"], prediction["probability"], prediction["metadata"], prediction["processed_text"]
 
 
 def run_pipeline(
@@ -63,24 +74,39 @@ def run_pipeline(
     attribute_classifiers=None,
     context_turns=None,
     context_chars=None,
+    task_config=None,
+    model_mode="legacy",
+    preprocessing_config=None,
 ):
     """Full pipeline: detect → classify scenario → generate response."""
     context = build_context_window(dialogue, max_turns=context_turns, max_chars=context_chars)
     detector_input = context.text
-    pred_label, prob_manip = predict(model, tokenizer, detector_input, device, max_length, threshold)
+    pred_label, prob_manip, language_metadata, processed_text = predict(
+        model,
+        tokenizer,
+        detector_input,
+        device,
+        max_length,
+        threshold,
+        task_config=task_config,
+        model_mode=model_mode,
+        preprocessing_config=preprocessing_config,
+    )
     is_manip = pred_label == 1
     attributes = (
-        predict_available_attributes(detector_input, attribute_classifiers)
+        predict_available_attributes(processed_text, attribute_classifiers)
         if is_manip and attribute_classifiers
         else {}
     )
     result = generate_response(dialogue, is_manip, prob_manip, attributes, context.signals)
+    result["language_metadata"] = language_metadata
 
     print("\n" + "=" * 60)
     print("  PIPELINE OUTPUT")
     print("=" * 60)
     print(f"\n📝 Input Dialogue:\n   {dialogue.replace(chr(10), chr(10) + '   ')}\n")
     print(f"🪟 Context Window:            {context.used_turns}/{context.total_turns} turns")
+    print(f"🌐 Detected Language:         {language_metadata['language']} ({language_metadata['script']})")
     if context.signals.get("active"):
         print(f"🧩 Context Signals:           {', '.join(context.signals['active'])}")
     print(f"🔍 Manipulation Probability: {prob_manip:.4f}")
@@ -112,16 +138,16 @@ def main():
                         help="Use only the most recent N turns for detection")
     parser.add_argument("--context_chars", type=int, default=None,
                         help="Use only the most recent N characters after turn windowing")
+    parser.add_argument("--transliteration_normalization", choices=["auto", "basic", "external", "off"], default="auto")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     print(f"Loading model from {args.model_path} …")
-    config = load_pipeline_config(args.model_path)
+    model, tokenizer, config, model_mode = load_model_bundle(args.model_path, device)
     max_length = args.max_length or config.get("max_length", 512)
     threshold = args.threshold if args.threshold is not None else config.get("threshold", 0.5)
     print(f"Using max_length={max_length}, threshold={threshold:.2f}")
-    model, tokenizer = load_model(args.model_path, device)
     attribute_base_dir = os.path.dirname(os.path.normpath(args.model_path)) or "./saved_model"
     attribute_classifiers = load_available_attribute_classifiers(
         {
@@ -133,11 +159,13 @@ def main():
     if attribute_classifiers:
         print(f"Loaded attribute classifiers: {', '.join(sorted(attribute_classifiers))}")
     print("Model loaded ✅\n")
+    preprocessing = PreprocessingConfig(transliteration_normalization=args.transliteration_normalization)
 
     if args.input:
         run_pipeline(
             model, tokenizer, args.input, device, max_length, threshold,
             attribute_classifiers, args.context_turns, args.context_chars,
+            task_config=config, model_mode=model_mode, preprocessing_config=preprocessing,
         )
     else:
         # Interactive mode
@@ -161,6 +189,7 @@ def main():
             run_pipeline(
                 model, tokenizer, dialogue, device, max_length, threshold,
                 attribute_classifiers, args.context_turns, args.context_chars,
+                task_config=config, model_mode=model_mode, preprocessing_config=preprocessing,
             )
 
 

@@ -1,0 +1,10 @@
+{
+  "name": "microsoft/mdeberta-v3-base",
+  "model_name": "microsoft/mdeberta-v3-base",
+  "architecture": "encoder",
+  "pooling": "cls",
+  "max_length": 256,
+  "language_focus": "multilingual",
+  "description": "Strong multilingual encoder and recommended base for NLI-style transfer.",
+  "aliases": ["mdeberta-v3-base"]
+}

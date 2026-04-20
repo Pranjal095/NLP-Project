@@ -1,0 +1,9 @@
+{
+  "name": "xlm-roberta-base",
+  "model_name": "xlm-roberta-base",
+  "architecture": "encoder",
+  "pooling": "cls",
+  "max_length": 256,
+  "language_focus": "multilingual",
+  "description": "General multilingual baseline across English, Indic, and code-mixed text."
+}

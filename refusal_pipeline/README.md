@@ -51,6 +51,105 @@ python3 demo.py --model_path ./saved_model/final --context_turns 8
 python3 demo.py --model_path ./saved_model/final
 ```
 
+## Multilingual / Indic Extension
+
+The multilingual stack is additive: it does **not** replace the deterministic
+refusal path. It adds configurable training/evaluation utilities around the
+existing detector so we can benchmark English, multilingual, Indic, code-mixed,
+and Romanized inputs while keeping refusal generation rule-based.
+
+### Recommended Model Choices
+
+| Model | Best Use |
+|------|---------|
+| `xlm-roberta-base` | Best general multilingual baseline across English + Indic + code-mixed text |
+| `google/muril-base-cased` | Best practical choice for Indian languages and transliterated/Romanized inputs |
+| `ai4bharat/IndicBERTv2-SS` | Best Indic-first encoder when you want a lighter regional-language focus |
+| `google/byt5-small` | Best fallback for noisy Romanized text, OCR noise, and spelling corruption |
+| `microsoft/mdeberta-v3-base` | Strong multilingual/NLI backbone and recommended zero-shot transfer base |
+| `sentence-transformers/LaBSE` | Retrieval, clustering, hard-negative mining, weak supervision |
+| `intfloat/multilingual-e5-base` | Retrieval, pseudo-labeling, deduplication, and semantic search |
+
+### Reproducible Commands
+
+English baseline:
+
+```bash
+python3 train_multilingual.py \
+  --task detection \
+  --backbone roberta-base \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --output_dir ./saved_model/en_roberta
+```
+
+Multilingual baseline:
+
+```bash
+python3 train_multilingual.py \
+  --task detection \
+  --backbone xlm-roberta-base \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --output_dir ./saved_model/xlmr_multilingual
+```
+
+Indic-focused experiment:
+
+```bash
+python3 train_multilingual.py \
+  --task detection \
+  --backbone google/muril-base-cased \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --output_dir ./saved_model/muril_detection \
+  --transliteration_normalization auto
+
+python3 run_indic_suite.py \
+  --model_path ./saved_model/muril_detection/final \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --output_dir ./saved_model/muril_detection/indic_suite
+```
+
+Zero-shot multilingual NLI baseline:
+
+```bash
+python3 run_zero_shot_nli.py \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --output_dir ./saved_model/zero_shot_nli
+```
+
+Optional shared-encoder multitask prototype:
+
+```bash
+python3 train_multitask.py \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --backbone xlm-roberta-base \
+  --output_dir ./saved_model/multitask_xlmr
+```
+
+### Indic Data Note
+
+The repository still ships only the original English MentalManip data. No
+translated Indic benchmark set is committed here. To avoid changing the task
+distribution with a different external dataset, the multilingual utilities are
+designed to work on:
+
+- the original English data
+- future translated variants of `mentalmanip_con.csv`
+- code-mixed/Romanized augmentations derived from the same source data
+
+If you have a local translation model, you can generate a same-label Indic
+variant with:
+
+```bash
+python3 build_indic_dataset.py \
+  --data_path ../mentalmanip_dataset/mentalmanip_con.csv \
+  --model_name <local-translation-model> \
+  --languages hi bn ta te mr \
+  --output_path ../mentalmanip_dataset/mentalmanip_indic_augmented.csv
+```
+
+This translation/augmentation step is intentionally isolated from the actual
+runtime refusal path.
+
 ---
 
 ## Project Structure
@@ -68,6 +167,13 @@ python3 demo.py --model_path ./saved_model/final
 | `smoke_test.py` | End-to-end runtime smoke test using a tiny local checkpoint |
 | `demo.py` | End-to-end demo (CLI or interactive) |
 | `requirements.txt` | Python dependencies |
+| `train_multilingual.py` | Unified multilingual/Indic detector + attribute training |
+| `train_multitask.py` | Experimental shared-encoder multi-task training |
+| `evaluate_multilingual.py` | Per-language, robustness, and structured-result evaluation |
+| `run_zero_shot_nli.py` | Zero-shot multilingual NLI benchmark |
+| `run_indic_suite.py` | IndicXTREME-style multilingual benchmark runner |
+| `build_indic_dataset.py` | Optional translation/augmentation utility for same-label Indic variants |
+| `multilingual_support/` | Backbone registry, preprocessing, metrics, retrieval, weak supervision, utilities |
 
 ---
 
@@ -112,6 +218,14 @@ python3 demo.py --model_path ./saved_model/final
   - ✅ Offers alternative help
 - **Stress tests**: adversarial manipulative prompts and hard non-manipulative negatives. Run with a trained detector or with `--policy_only`.
 - **Smoke test**: creates a tiny local checkpoint in `/tmp`, runs the real model/tokenizer loading path, then verifies context signals, detector routing, scenario selection, and refusal generation.
+
+### F. Multilingual / Indic Tooling
+- `multilingual_support/model_registry.py` exposes a unified backbone registry so experiments can swap between RoBERTa, XLM-R, MuRIL, IndicBERTv2, mDeBERTa-v3, mT5, ByT5, LaBSE, and multilingual-e5.
+- `multilingual_support/preprocessing.py` adds language/script detection, robust text cleaning, code-mixed detection, and optional transliteration normalization.
+- `multilingual_support/training.py` adds configurable multilingual training with full fine-tuning, frozen-encoder mode, or optional LoRA/PEFT.
+- `multilingual_support/metrics.py` and `evaluate_multilingual.py` add per-language metrics, AUROC/AUPRC, calibration metrics, and structured JSON/CSV outputs plus summary plots.
+- `multilingual_support/embedding_utils.py` adds LaBSE / multilingual-e5 retrieval for hard-negative mining, clustering, deduplication, and pseudo-labeling.
+- `multilingual_support/generation_utils.py`, `active_learning.py`, and `annotation_triage.py` provide augmentation and annotation helpers that remain outside the refusal path.
 
 ---
 

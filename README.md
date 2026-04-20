@@ -66,6 +66,12 @@ all manipulative stress cases were caught, but both benign hard negatives were
 flagged. The main remaining empirical need is threshold calibration and stronger
 hard-negative coverage.
 
+The refusal pipeline now also contains an additive multilingual / Indic-ready
+experiment stack with configurable backbones, preprocessing, zero-shot NLI
+evaluation, retrieval/embedding utilities, and an Indic benchmark runner. See
+[`refusal_pipeline/README.md`](./refusal_pipeline/README.md) for the multilingual
+training and evaluation commands.
+
 ## 2. Datasets Description
 Please check under the [dataset folder](./mentalmanip_dataset/).
 

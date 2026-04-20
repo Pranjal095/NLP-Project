@@ -1,0 +1,10 @@
+{
+  "name": "roberta-base",
+  "model_name": "roberta-base",
+  "architecture": "encoder",
+  "pooling": "cls",
+  "max_length": 256,
+  "language_focus": "english",
+  "description": "Strong English baseline and backward-compatible default.",
+  "aliases": ["english-baseline"]
+}

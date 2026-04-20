@@ -11,7 +11,8 @@ import os
 from dataclasses import dataclass
 
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+from multilingual_support.inference import load_text_model, predict_text
 
 
 TECHNIQUE_LABELS = [
@@ -89,9 +90,10 @@ class AttributeClassifier:
         self.threshold = threshold if threshold is not None else config.get("threshold", 0.5)
         self.max_length = max_length or config.get("max_length", 128)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_path).to(self.device)
-        self.model.eval()
+        self.model, self.tokenizer, self.runtime_config, self.runtime_mode = load_text_model(
+            model_path,
+            device=self.device,
+        )
 
     @staticmethod
     def _load_config(model_path):
@@ -102,17 +104,17 @@ class AttributeClassifier:
             return json.load(f)
 
     def predict(self, text):
-        enc = self.tokenizer(
+        prediction = predict_text(
+            self.model,
+            self.tokenizer,
             text,
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length",
+            self.device,
             max_length=self.max_length,
-        ).to(self.device)
-
-        with torch.no_grad():
-            logits = self.model(**enc).logits
-            probs = torch.sigmoid(logits)[0].detach().cpu().tolist()
+            threshold=self.threshold,
+            task_config=self.runtime_config,
+            mode=self.runtime_mode,
+        )
+        probs = prediction["probabilities"]
 
         selected = [
             label for label, prob in zip(self.labels, probs)

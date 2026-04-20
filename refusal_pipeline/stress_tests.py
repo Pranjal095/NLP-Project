@@ -12,10 +12,11 @@ import os
 
 import torch
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from attribute_classifier import load_available_attribute_classifiers, predict_available_attributes
 from context_window import build_context_window
+from multilingual_support.inference import load_text_model, predict_text
+from multilingual_support.preprocessing import PreprocessingConfig
 from refusal_policy import generate_response
 
 
@@ -93,24 +94,23 @@ def load_pipeline_config(model_path):
 
 
 def load_detector(model_path, device):
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path).to(device)
-    model.eval()
-    return model, tokenizer
+    model, tokenizer, config, mode = load_text_model(model_path, device=device)
+    return model, tokenizer, config, mode
 
 
-def predict_detector(model, tokenizer, text, device, max_length, threshold):
-    enc = tokenizer(
+def predict_detector(model, tokenizer, text, device, max_length, threshold, task_config, mode, preprocessing_config):
+    prediction = predict_text(
+        model,
+        tokenizer,
         text,
-        return_tensors="pt",
-        truncation=True,
-        padding="max_length",
+        device,
         max_length=max_length,
-    ).to(device)
-    with torch.no_grad():
-        logits = model(**enc).logits
-        prob_manip = torch.softmax(logits, dim=-1)[0, 1].item()
-    return int(prob_manip >= threshold), prob_manip
+        threshold=threshold,
+        task_config=task_config,
+        mode=mode,
+        preprocessing_config=preprocessing_config,
+    )
+    return int(prediction["prediction"]), prediction["probability"], prediction["processed_text"]
 
 
 def response_checks(response):
@@ -134,21 +134,27 @@ def main():
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--context_turns", type=int, default=None)
     parser.add_argument("--context_chars", type=int, default=None)
+    parser.add_argument("--transliteration_normalization", choices=["auto", "basic", "external", "off"], default="auto")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = load_pipeline_config(args.model_path)
     max_length = args.max_length or config.get("max_length", 512)
     threshold = args.threshold if args.threshold is not None else config.get("threshold", 0.5)
+    preprocessing = PreprocessingConfig(transliteration_normalization=args.transliteration_normalization)
 
-    model = tokenizer = None
+    model = tokenizer = model_config = model_mode = None
     if not args.policy_only:
         if not os.path.exists(os.path.join(args.model_path, "config.json")):
-            raise FileNotFoundError(
-                f"No detector checkpoint found at {args.model_path}. "
-                "Run with --policy_only or train the detector first."
-            )
-        model, tokenizer = load_detector(args.model_path, device)
+            multilingual_metadata = os.path.exists(os.path.join(args.model_path, "multilingual_model_config.json"))
+            if not multilingual_metadata:
+                raise FileNotFoundError(
+                    f"No detector checkpoint found at {args.model_path}. "
+                    "Run with --policy_only or train the detector first."
+                )
+        model, tokenizer, model_config, model_mode = load_detector(args.model_path, device)
+        max_length = args.max_length or model_config.get("max_length", max_length)
+        threshold = args.threshold if args.threshold is not None else model_config.get("threshold", threshold)
 
     attribute_base_dir = os.path.dirname(os.path.normpath(args.model_path)) or "./saved_model"
     attribute_classifiers = load_available_attribute_classifiers(
@@ -178,13 +184,15 @@ def main():
         if args.policy_only:
             pred_label = int(case["expected_manipulative"])
             prob_manip = 1.0 if pred_label else 0.0
+            processed_text = context.text
         else:
-            pred_label, prob_manip = predict_detector(
+            pred_label, prob_manip, processed_text = predict_detector(
                 model, tokenizer, context.text, device, max_length, threshold,
+                model_config or config, model_mode, preprocessing,
             )
 
         attributes = (
-            predict_available_attributes(context.text, attribute_classifiers)
+            predict_available_attributes(processed_text, attribute_classifiers)
             if pred_label and attribute_classifiers
             else {}
         )

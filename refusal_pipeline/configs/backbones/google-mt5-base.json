@@ -1,0 +1,10 @@
+{
+  "name": "google/mt5-base",
+  "model_name": "google/mt5-base",
+  "architecture": "seq2seq",
+  "pooling": "mean",
+  "max_length": 256,
+  "language_focus": "multilingual",
+  "description": "Encoder-decoder backbone useful for multilingual augmentation and text-to-text style experiments.",
+  "aliases": ["mt5-base"]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "intfloat/multilingual-e5-base",
+  "model_name": "intfloat/multilingual-e5-base",
+  "architecture": "sentence_encoder",
+  "pooling": "mean",
+  "max_length": 256,
+  "embedding_normalize": true,
+  "language_focus": "retrieval",
+  "description": "Strong multilingual retrieval encoder for mining hard negatives and pseudo-labeling.",
+  "input_prefix": "passage: ",
+  "aliases": ["multilingual-e5-base", "e5-base"]
+}

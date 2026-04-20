@@ -15,11 +15,13 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, confusion_matrix, classification_report,
 )
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from attribute_classifier import load_available_attribute_classifiers, predict_available_attributes
 from context_window import build_context_window
 from data_loader import load_mentalmanip
+from multilingual_support.inference import load_text_model, predict_text
+from multilingual_support.metrics import compute_binary_metrics, save_structured_results, save_summary_plot
+from multilingual_support.preprocessing import PreprocessingConfig
 from refusal_policy import generate_response
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -43,30 +45,36 @@ def quantitative_eval(
     threshold=0.5,
     context_turns=None,
     context_chars=None,
+    task_config=None,
+    model_mode="legacy",
+    preprocessing_config=None,
 ):
     """Run the detector on the test split and print full metrics."""
     model.eval()
     all_preds = []
     all_labels = test_df["Manipulative"].tolist()
+    all_probs = []
+    languages = test_df["language"].tolist() if "language" in test_df.columns else None
 
-    with torch.no_grad():
-        for _, row in test_df.iterrows():
-            context = build_context_window(
-                row["Dialogue"],
-                max_turns=context_turns,
-                max_chars=context_chars,
-            )
-            enc = tokenizer(
-                context.text,
-                return_tensors="pt",
-                truncation=True,
-                padding="max_length",
-                max_length=max_length,
-            ).to(device)
-            logits = model(**enc).logits
-            probs = torch.softmax(logits, dim=-1)
-            pred = int(probs[0, 1].item() >= threshold)
-            all_preds.append(pred)
+    for _, row in test_df.iterrows():
+        context = build_context_window(
+            row["Dialogue"],
+            max_turns=context_turns,
+            max_chars=context_chars,
+        )
+        prediction = predict_text(
+            model,
+            tokenizer,
+            context.text,
+            device,
+            max_length=max_length,
+            threshold=threshold,
+            task_config=task_config,
+            mode=model_mode,
+            preprocessing_config=preprocessing_config,
+        )
+        all_probs.append(prediction["probability"])
+        all_preds.append(int(prediction["prediction"]))
 
     print("\n" + "=" * 60)
     print(f"  QUANTITATIVE EVALUATION — Test Set (threshold={threshold:.2f})")
@@ -83,6 +91,7 @@ def quantitative_eval(
     print(f"  Recall:    {recall_score(all_labels, all_preds, zero_division=0):.4f}")
     print(f"  F1:        {f1_score(all_labels, all_preds, average='binary', zero_division=0):.4f}")
     print(f"  Macro-F1:  {f1_score(all_labels, all_preds, average='macro', zero_division=0):.4f}")
+    return compute_binary_metrics(all_labels, all_probs, threshold=threshold, language_labels=languages)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -162,6 +171,9 @@ def qualitative_eval(
     attribute_classifiers=None,
     context_turns=None,
     context_chars=None,
+    task_config=None,
+    model_mode="legacy",
+    preprocessing_config=None,
 ):
     """Run curated examples through detection + refusal and display results."""
     model.eval()
@@ -179,22 +191,21 @@ def qualitative_eval(
         )
 
         # Run detector
-        enc = tokenizer(
+        prediction = predict_text(
+            model,
+            tokenizer,
             context.text,
-            return_tensors="pt",
-            truncation=True,
-            padding="max_length",
+            device,
             max_length=max_length,
-        ).to(device)
-        with torch.no_grad():
-            logits = model(**enc).logits
-            probs = torch.softmax(logits, dim=-1)
-            prob_manip = probs[0, 1].item()
-            pred_label = int(prob_manip >= threshold)
-
-        is_manip = pred_label == 1
+            threshold=threshold,
+            task_config=task_config,
+            mode=model_mode,
+            preprocessing_config=preprocessing_config,
+        )
+        prob_manip = prediction["probability"]
+        is_manip = prediction["prediction"] == 1
         attributes = (
-            predict_available_attributes(context.text, attribute_classifiers)
+            predict_available_attributes(prediction["processed_text"], attribute_classifiers)
             if is_manip and attribute_classifiers
             else {}
         )
@@ -254,18 +265,19 @@ def main():
                         help="Use only the most recent N turns for detection")
     parser.add_argument("--context_chars", type=int, default=None,
                         help="Use only the most recent N characters after turn windowing")
+    parser.add_argument("--output_dir", default=None,
+                        help="Optional directory to save structured multilingual reports")
+    parser.add_argument("--transliteration_normalization", choices=["auto", "basic", "external", "off"], default="auto")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     print(f"Loading model from {args.model_path} …")
-    config = load_pipeline_config(args.model_path)
+    model, tokenizer, config, model_mode = load_text_model(args.model_path, device=device)
     max_length = args.max_length or config.get("max_length", 512)
     threshold = args.threshold if args.threshold is not None else config.get("threshold", 0.5)
     print(f"Using max_length={max_length}, threshold={threshold:.2f}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(args.model_path).to(device)
     attribute_base_dir = os.path.dirname(os.path.normpath(args.model_path)) or "./saved_model"
     attribute_classifiers = load_available_attribute_classifiers(
         {
@@ -278,22 +290,44 @@ def main():
         print(f"Loaded attribute classifiers: {', '.join(sorted(attribute_classifiers))}")
 
     if args.qualitative:
+        preprocessing = PreprocessingConfig(transliteration_normalization=args.transliteration_normalization)
         qualitative_eval(
             model, tokenizer, device, max_length, threshold, attribute_classifiers,
             args.context_turns, args.context_chars,
+            task_config=config, model_mode=model_mode, preprocessing_config=preprocessing,
         )
     else:
         # Run both
         print(f"Loading test data from {args.data_path} …")
         _, _, test_df = load_mentalmanip(args.data_path)
-        quantitative_eval(
+        preprocessing = PreprocessingConfig(transliteration_normalization=args.transliteration_normalization)
+        test_df["language"] = [
+            predict_text(
+                model,
+                tokenizer,
+                text,
+                device,
+                max_length=max_length,
+                threshold=threshold,
+                task_config=config,
+                mode=model_mode,
+                preprocessing_config=preprocessing,
+            )["metadata"]["language"]
+            for text in test_df["Dialogue"].astype(str)
+        ]
+        metrics = quantitative_eval(
             model, tokenizer, test_df, device, max_length, threshold,
             args.context_turns, args.context_chars,
+            task_config=config, model_mode=model_mode, preprocessing_config=preprocessing,
         )
         qualitative_eval(
             model, tokenizer, device, max_length, threshold, attribute_classifiers,
             args.context_turns, args.context_chars,
+            task_config=config, model_mode=model_mode, preprocessing_config=preprocessing,
         )
+        if args.output_dir:
+            save_structured_results(metrics, args.output_dir, "evaluate")
+            save_summary_plot(metrics, args.output_dir, "evaluate")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,10 @@
+{
+  "name": "ai4bharat/IndicBERTv2-SS",
+  "model_name": "ai4bharat/IndicBERTv2-SS",
+  "architecture": "encoder",
+  "pooling": "cls",
+  "max_length": 256,
+  "language_focus": "indic",
+  "description": "Indic-first encoder for resource-efficient multilingual training.",
+  "aliases": ["IndicBERTv2-SS", "indicbertv2"]
+}
